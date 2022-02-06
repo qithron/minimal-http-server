@@ -16,7 +16,7 @@ import urllib.parse
 
 from threading import Thread
 from http import HTTPStatus
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 
 cfg = {
     'port': 80,
@@ -78,12 +78,12 @@ def server_uptime(start_time):
 
 def use_cache(self, realpath):
     '''Use cache if possible.'''
-    if ("If-Modified-Since" in self.headers
-            and "If-None-Match" not in self.headers):
+    if ('If-Modified-Since' in self.headers
+            and 'If-None-Match' not in self.headers):
         # compare If-Modified-Since and time of last file modification
         try:
             ims = email.utils.parsedate_to_datetime(
-                self.headers["If-Modified-Since"])
+                self.headers['If-Modified-Since'])
         except (TypeError, IndexError, OverflowError, ValueError):
             # ignore ill-formed values
             pass
@@ -104,20 +104,50 @@ def use_cache(self, realpath):
                     return True
     return False
 
-def HTML_raw_file(self, realpath, request_method):
+def HTML_raw_file(self, realpath, content_type, request_method):
     '''Send raw file.'''
     st = os.stat(realpath)
     if use_cache(self, realpath):
         return None
-    content_type = self.guess_type(realpath)
     self.send_response(HTTPStatus.OK)
-    self.send_header("Content-type", content_type)
-    self.send_header("Content-Length", str(st[6]))
-    self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
+    self.send_header('Content-type', content_type)
+    self.send_header('Content-Length', str(st[6]))
+    self.send_header('Last-Modified', self.date_time_string(st.st_mtime))
     self.end_headers()
     if request_method == 'GET':
         with open(realpath, 'rb') as f:
             shutil.copyfileobj(f, self.wfile)
+    return None
+
+def HTML_video_player(self, realpath, request_method, ffmpeg=None):
+    '''
+    Generate/Handle video.
+
+    TODO: use cache?
+    TODO: ffmpeg, mkv + ass?
+    '''
+    st = os.stat(realpath)
+    if 'range' in self.headers:
+        ss = int(self.headers['range'].split('=',1)[1][:-1])
+        self.send_response(HTTPStatus.PARTIAL_CONTENT)
+        self.send_header('Content-type', 'video/mp4')
+        self.send_header('Content-Length', str(st[6]))
+        self.send_header('Content-Range', f'bytes {ss}-{st[6]-1}/{st[6]}')
+        self.send_header('Last-Modified', self.date_time_string(st.st_mtime))
+        self.end_headers()
+        #if request_method == 'HEAD': return None
+        with open(realpath, 'rb') as f:
+            f.seek(ss)
+            shutil.copyfileobj(f, self.wfile)
+    else:
+        self.send_response(HTTPStatus.OK)
+        self.send_header('Content-type', 'video/mp4')
+        self.send_header('Content-Length', str(st[6]))
+        self.send_header('Last-Modified', self.date_time_string(st.st_mtime))
+        self.end_headers()
+        if request_method == 'GET':
+            with open(realpath, 'rb') as f:
+                shutil.copyfileobj(f, self.wfile)
     return None
 
 def HTML_list_directory(self, realpath, request_method):
@@ -129,7 +159,7 @@ def HTML_list_directory(self, realpath, request_method):
         - broken links
     '''
     try:
-        if use_cache(self, (realpath)):
+        if use_cache(self, realpath):
             return None
         lst = sorted(os.listdir(realpath),key=lambda a: a.lower())
     except OSError:
@@ -147,7 +177,7 @@ def HTML_list_directory(self, realpath, request_method):
         a.append(f'''<a href="{('../'*i)}">{dirs[i]}/</a>''')
     navbar = '<table id=navbar><tr><td>' + ''.join(a) + '</td></tr></table>'
     # total items
-    info = f'<span>total: {len(lst)} item(s)</span>'
+    info = f'<p>total: {len(lst)} item(s)</p>'
     # entries, including . and ..
     d = [] # directories
     e = [] # files
@@ -208,7 +238,7 @@ def HTML_list_directory(self, realpath, request_method):
             '</tr>')
     head, foot = map(
         lambda s: bytes(s, encoding='utf-8'),
-        open('listdir.html').read().replace('\n','').split('<!---->'))
+        open('meta/listdir.html').read().replace('\n','').split('<!---->'))
     doc = (head +
         bytes(navbar, encoding='utf-8') +
         bytes(info, encoding='utf-8') +
@@ -255,30 +285,11 @@ def HTML_server_info(self, request_method):
     o.insert(0, '<tr><td><i>' +
         html.escape(self._headers_buffer[0].decode().strip()) +
         '</i></td></tr>')
-    head = bytes(
-        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
-        '<link rel="icon" type="image/png" href="data:image/png;base64,'
-            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAA'
-            'AACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg=='
-        '">'
-        '<style>'
-        'table{'
-            'width:100%;'
-            'border-color:#000000;'
-            'border-width:1px;'
-            'border-style:solid;'
-            'border-collapse:collapse;'
-        '}''td{'
-            'border-width:0 1px;'
-            'border-style:solid;'
-        '}''th{'
-            'text-align:left;'
-            'border-width:1px;'
-            'border-style:solid;'
-        '}'
-        '</style>'
-        '</head><body><table>' ,encoding='utf-8')
-    foot = bytes('</table></body></html>', encoding='utf-8')
+    head, foot = map(
+        lambda s: bytes(s, encoding='utf-8'),
+        open('meta/serverinfo.html').read().replace('\n','').split('<!---->'))
+    exth = bytes('<table>', encoding='utf-8')
+    extf = bytes('</table>', encoding='utf-8')
     srvr = bytes(f'<tr><th colspan="2">Server Info</th></tr>{"".join(m)}',
         encoding='utf-8')
     reqs = bytes(f'<tr><th colspan="2">Request Headers</th></tr>{"".join(n)}',
@@ -287,16 +298,17 @@ def HTML_server_info(self, request_method):
         '<tr><td>Content-Length</td><td>',
         encoding='utf-8')
     res3 = bytes('</td></tr>', encoding='utf-8')
-    lna = len(head) + len(foot) + len(srvr) + len(reqs) + len(res1) + len(res3)
+    lna = len(head) + len(foot) + len(exth) + len(extf) \
+        + len(srvr) + len(reqs) + len(res1) + len(res3)
     lnp = lna + len(str(lna))
     if len(str(lna)) != len(str(lnp)):
         lnp += 1
     lna += len(str(lnp))
     res2 = bytes(str(lnp), encoding='utf-8')
-    self.send_header('Content-Length', str(lna))
+    self.send_header('Content-Length', str(lnp))
     self.end_headers()
     if request_method == 'GET':
-        for v in head, srvr, res1, res2, res3, reqs, foot:
+        for v in head, exth, srvr, res1, res2, res3, reqs, extf, foot:
             self.wfile.write(v)
     return None
 
@@ -352,6 +364,8 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
         Rules for GET and HEAD method.
 
         always return None
+
+        TODO: pertimbangkan "realpath based rules"
         '''
         ### URL based rules
         # /
@@ -383,7 +397,10 @@ class CustomHTTPRequestHandler(BaseHTTPRequestHandler):
                 return None
             return HTML_list_directory(self, realpath, RM)
         elif os.path.isfile(realpath):
-            return HTML_raw_file(self, realpath, RM)
+            typ = self.guess_type(realpath)
+            if typ == 'video/mp4':
+                return HTML_video_player(self, realpath, RM)
+            return HTML_raw_file(self, realpath, typ, RM)
         ### 404
         # HTML_404
         self.send_error(HTTPStatus.NOT_FOUND,
@@ -417,7 +434,7 @@ if __name__ == '__main__':
                 httpd.shutdown()
                 break
 
-    httpd = HTTPServer(('', cfg['port']), CustomHTTPRequestHandler)
+    httpd = ThreadingHTTPServer(('', cfg['port']), CustomHTTPRequestHandler)
     srvcd = Thread(target=lambda: servercmd(httpd))
     srvcd.start()
     _info = {
