@@ -6,116 +6,116 @@
 UhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==">
 <style>
 ::-webkit-scrollbar {
-  display:none;
+    display:none;
 }
 body {
-  color:#000000;
-  background-color:#cfff7f;
-  margin:0;
-  text-align:center;
+    color:#000000;
+    background-color:#cfff7f;
+    margin:0;
+    text-align:center;
 }
 a {
-  color:#00ffff;
-  text-decoration:none;
+    color:#00ffff;
+    text-decoration:none;
 }
 a:hover {
-  color:#ff0000 !important;
-  text-decoration:none;
+    color:#ff0000 !important;
+    text-decoration:none;
 }
 
 header {
-  margin:0;
-  padding:1rem;
+    margin:0;
+    padding:1rem;
 }
 header div {
-  background-color:#b9a06e;
-  border-color:#5367a3;
-  border-style:ridge;
-  border-width:4px;
-  margin:0;
-  padding:1rem;
+    background-color:#b9a06e;
+    border-color:#5367a3;
+    border-style:ridge;
+    border-width:4px;
+    margin:0;
+    padding:0.5rem 1rem;
 }
 header h1 {
-  background-color:#b2adff;
-  border-color:#334fe5;
-  border-style:ridge;
-  border-width:4px;
-  margin:0;
-  padding:1rem;
+    background-color:#b2adff;
+    border-color:#334fe5;
+    border-style:ridge;
+    border-width:4px;
+    margin:0.5rem 0;
+    padding:1rem;
 }
-#menu {
-  border-style:none;
-  font-weight:bold;
-  margin:0.5rem 0;
-  padding:0;
-  display:flex;
-  flex-direction:row;
-  flex-wrap:wrap;
-  justify-content:space-evenly;
-  align-content:center;
-} #menu a {
-  color:#ffff7f;
-  background-color:#001b27;
-  border-color:#77888b;
-  border-style:ridge;
-  border-width:4px;
-  width:11ch;
-  margin:0.5rem;
-  padding:0.5ch 1ch;
+.menu {
+    border-style:none;
+    font-weight:bold;
+    margin:0;
+    padding:0;
+    display:flex;
+    flex-direction:row;
+    flex-wrap:wrap;
+    justify-content:center;
+    align-content:center;
+} .menu a {
+    color:#ffff7f;
+    background-color:#001b27;
+    border-color:#77888b;
+    border-style:ridge;
+    border-width:4px;
+    width:11ch;
+    margin:0.5rem;
+    padding:0.5ch 1ch;
 }
 header p {
-  background-color:#55aa00;
-  border-color:#37792d;
-  border-style:ridge;
-  border-width:4px;
-  margin:0;
-  padding:1rem;
+    background-color:#55aa00;
+    border-color:#37792d;
+    border-style:ridge;
+    border-width:4px;
+    margin:0.5rem 0;
+    padding:1rem;
 }
 
 main {
-  margin:0;
-  padding:0 1rem;
+    margin:0;
+    padding:0 1rem;
 }
 main div {
-  background-color:#959595;
-  border-color:#bcbcff;
-  border-style:ridge;
-  border-width:4px;
-  margin:0;
-  padding:0.5rem 1rem;
+    background-color:#959595;
+    border-color:#bcbcff;
+    border-style:ridge;
+    border-width:4px;
+    margin:0;
+    padding:0.5rem 1rem;
 }
 main table {
-  text-align:center;
-  width:100%;
-  margin:0.5rem auto;
-  padding:0;
-  border-collapse:collapse;
+    text-align:center;
+    width:100%;
+    margin:0.5rem auto;
+    padding:0;
+    border-collapse:collapse;
 }
 main table td {
-  border-color:#000000;
-  border-style:solid;
-  border-width:2px;
-  padding:0.25rem 0.5rem;
+    border-color:#000000;
+    border-style:solid;
+    border-width:2px;
+    padding:0.25rem 0.5rem;
 }
 
 footer {
-  margin:0;
-  padding:1rem;
+    margin:0;
+    padding:1rem;
 }
 footer div {
-  background-color:#91b796;
-  border-color:#57b988;
-  border-style:ridge;
-  border-width:4px;
-  margin:0;
-  padding:1rem;
+    background-color:#91b796;
+    border-color:#57b988;
+    border-style:ridge;
+    border-width:4px;
+    margin:0;
+    padding:1rem;
 }
 
 #archrepo {
-  background-color:#116b98;
+    background-color:#116b98;
 }
 #python{
-  background-color:#9f9f00;
+    background-color:#9f9f00;
 }
 </style>
 </head>
@@ -125,9 +125,14 @@ footer div {
 <header>
 <div>
   <h1>Hey there friend! How is going?<br>Welcome to my Website!</h1>
-  <div id="menu">
+  <div class="menu">
     <a href="/?">root</a>
     <a href="/?info">info</a>
+    <a href="/?pydoc">pydoc</a>
+  </div>
+  <div class="menu">
+    <a href=>Site Tutor</a>
+    <a href="/?app=freechat">Free Chat</a>
   </div>
   <p>
     <i>Feel Free to Explore</i>
