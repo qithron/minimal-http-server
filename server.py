@@ -595,7 +595,6 @@ class freechat(Addon):
         this.end_headers()
         text = this.safeio(lambda: this.rfile.read(length).strip())
         if not text or len(text) > 65535:
-            this.send_error(HTTPStatus.NOT_ACCEPTABLE, 'You NaughtyNaughty :)')
             return None
         self.queue.put((name, text))
         return None
@@ -688,7 +687,7 @@ class pydoc_html(Addon):
         if RM == 'POST':
             return False
         elif this.path == '/pydoc/':
-            self.index(this, RM)
+            self.html_index(this, RM)
         elif this.path == '/pydoc':
             old = urllib.parse.urlsplit(this.path)
             new = old[0], old[1], old[2] + '/', old[3], old[4]
@@ -697,18 +696,17 @@ class pydoc_html(Addon):
         elif this.path == '/pydoc/pydoc.css':
             this.send_file(self.csspath, RM)
         elif this.path.startswith('/pydoc/') and this.path.endswith('.html'):
-            self.page(this, realpath, RM)
+            self.html_page(this, realpath, RM)
         else:
             return False
         return True
 
-    def index(self, this, request_method):
+    def html_index(self, this, request_method):
         he = lambda a: html.escape(a)
         width = 0
         names = [n for n in sorted(sys.builtin_module_names)]
         # builtin
-        builtin = ['<div class="ot"><p>Built-in Modules</p>'
-            '<div class="in" onresize="ONRESIZE(0)">']
+        builtin = ['<div class="ot"><p>Built-in Modules</p><div class="in">']
         for name in names:
             text = he(name)
             link = he(name) + '.html'
@@ -718,8 +716,7 @@ class pydoc_html(Addon):
         builtin.append('</div></div>')
         modules = []
         for i, dn in enumerate(sorted(sys.path), start=1):
-            modules.append(f'<div class="ot"><p>{he(dn)}</p>'
-                f'<div class="in" onresize="ONRESIZE({i})">')
+            modules.append(f'<div class="ot"><p>{he(dn)}</p><div class="in">')
             lst = []
             for imp, name, ispkg in sorted(
             list(pkgutil.iter_modules([dn])), key=lambda i: i.name.lower()):
@@ -749,7 +746,7 @@ class pydoc_html(Addon):
             this.safeio(lambda: this.wfile.write(doc))
         return None
 
-    def page(self, this, realpath, request_method):
+    def html_page(self, this, realpath, request_method):
         class _HTMLDoc(pydoc.HTMLDoc):
             def page(self, title, pyver, contents):
                 """Format an HTML page."""
