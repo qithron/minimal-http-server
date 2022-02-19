@@ -1,0 +1,28 @@
+<!doctype html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANS
+UhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==">
+<link rel="stylesheet" href="/pydoc/pydoc.css">
+<script>
+// TODO: add sleep maybe?
+let GROUPS = null;
+function RESIZE() {
+    for (i=0; i<GROUPS.length; i++) {
+        if (! GROUPS[i].childElementCount) {continue;}
+        GROUPS[i].style.height =
+            Math.ceil(GROUPS[i].childElementCount /
+                Math.floor(GROUPS[i].clientWidth /
+                    GROUPS[i].children[0].clientWidth)) *
+            GROUPS[i].children[0].clientHeight + 'px';
+    }
+}
+function firstload() {
+    GROUPS = document.getElementsByClassName('in');
+    window.onresize = RESIZE;
+    RESIZE();
+}
+</script>
+</head>
+<body onload="firstload()"><SPLIT></body>
+</html>

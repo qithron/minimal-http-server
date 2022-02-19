@@ -2,29 +2,42 @@
 
 TODO: add MIT license here, or in pj dir instead?
 
+force to not exceed 79 chars
+
 TODO: add cache to reduce intensive modules, ex. generated files, etc ...
-TODO: remake logging
+TODO: remake logging, or modify http.server.BaseHTTPRequestHandler instead?
+TODO: override error page
+TODO: override error page (2)
+TODO: override error page (3)
+TODO: override error page in pydoc2.page(), tetap 200 jika ada masalah import
 '''
 
 import os
 import threading
 import shutil
-
-import time
 import datetime
 import email
-
-#import re
 import urllib.parse
-import html
 import http.server
 from http import HTTPStatus
+
+# listdir
+import time
+import html
 
 # freechat
 import sqlite3
 import json
 import random
 import queue
+
+# pydoc
+import sys
+import pkgutil
+import platform
+import pydoc
+
+ENC = 'utf-8'
 
 # def unhumanhtml(s):
 #     '''Strip HTML files to single line.'''
@@ -33,8 +46,6 @@ import queue
 ###############################################################################
 
 class Addon:
-    '''Template for addon for server class.'''
-
     def __init__(self, ServerClass):
         self.ServerClass = ServerClass
         #self.RequestHandlerClass = None
@@ -43,6 +54,9 @@ class Addon:
         return False
 
 class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
+    '''
+    TODO: pindahkan semua this.send_response() ... ke
+    TODO:     CustomHTTPRequestHandler.safeio()'''
     addon = None
 
     def __init__(self, *args, **kwargs):
@@ -59,7 +73,10 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
             return func()
         except (BrokenPipeError, ConnectionResetError) as e:
             self.log_error('%s', e)
-            return None
+        except TypeError as e:
+            self.log_error('%s', e)
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+        return None
 
     def do_GET(self):
         self.rule('GET')
@@ -161,31 +178,36 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    def rule_addon(self, realpath, query, RM):
+        for addon in self.addon:
+            if addon.rule(self, realpath, query, RM):
+                break
+        else:
+            return False
+        return True
+
     def rule(self, RM):
         realpath = conf.root \
             + urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
         query = self.query_to_dict(self.path)
         if RM == 'POST':
-            if any([e.rule(self, realpath, query, RM) for e in self.addon]):
+            if self.rule_addon(realpath, query, RM):
                 pass
             else:
                 self.send_error(HTTPStatus.NOT_IMPLEMENTED, 'Not Implemented')
             return None
-        # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
         if self.path == '/?pydoc':
             self.redirect_permanent(f'http://{self.headers["Host"]}:60000/')
         elif self.path == '/favicon.ico':
-            realpath = conf.root + '/main/img/one.png'
-            self.send_file(realpath, RM)
-        elif any([e.rule(self, realpath, query, RM) for e in self.addon]):
+            self.send_file(conf.root+'/main/img/one.png', RM)
+        elif self.rule_addon(realpath, query, RM):
             pass
-        # using mime types
         elif os.path.isfile(realpath):
             self.send_file(realpath, RM)
-        # broken links, or not found
+        elif os.path.isdir(realpath) or os.path.islink(realpath):
+            self.send_error(HTTPStatus.FORBIDDEN)
         else:
-            self.send_error(HTTPStatus.NOT_FOUND, 'Broken Links'
-                if os.path.islink(realpath) else 'File not found')
+            self.send_error(HTTPStatus.NOT_FOUND)
         return None
 
 class CustomHTTPServer(http.server.ThreadingHTTPServer):
@@ -312,11 +334,11 @@ class listdir(Addon):
                         f'<a href="{link}" download="{name}">🠋</a></td>'
                 '</tr>')
         with open(self.htmlpath) as f:
-            doc = f.read().replace('\n','').split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding='utf-8'), doc)
+            doc = f.read().split('<SPLIT>')
+        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
         doc = (head +
-            bytes(navbar, encoding='utf-8') +
-            bytes(info, encoding='utf-8') +
+            bytes(navbar, encoding=ENC) +
+            bytes(info, encoding=ENC) +
             b'<table id="lstdir">' +
             ''.join(d).encode('utf-8') +
             ''.join(e).encode('utf-8') +
@@ -405,27 +427,27 @@ class serverinfo(Addon):
             '</i></td></tr>')
         with open(conf.root + '/data/serverinfo.html') as f:
             doc = f.read().replace('\n','').split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding='utf-8'), doc)
-        exth = bytes('<table>', encoding='utf-8')
-        extf = bytes('</table>', encoding='utf-8')
+        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
+        exth = bytes('<table>', encoding=ENC)
+        extf = bytes('</table>', encoding=ENC)
         srvr = bytes(
             f'<tr><th colspan="2">Server Info</th></tr>{"".join(m)}',
-            encoding='utf-8')
+            encoding=ENC)
         reqs = bytes(
             f'<tr><th colspan="2">Request Headers</th></tr>{"".join(n)}',
-            encoding='utf-8')
+            encoding=ENC)
         res1 = bytes(
             f'<tr><th colspan="2">Response Headers</th></tr>{"".join(o)}'
             '<tr><td>Content-Length</td><td>',
-            encoding='utf-8')
-        res3 = bytes('</td></tr>', encoding='utf-8')
+            encoding=ENC)
+        res3 = bytes('</td></tr>', encoding=ENC)
         lna = len(head) + len(foot) + len(exth) + len(extf) \
             + len(srvr) + len(reqs) + len(res1) + len(res3)
         lnp = lna + len(str(lna))
         if len(str(lna)) != len(str(lnp)):
             lnp += 1
         lna += len(str(lnp))
-        res2 = bytes(str(lnp), encoding='utf-8')
+        res2 = bytes(str(lnp), encoding=ENC)
         this.send_header('Content-Length', str(lnp))
         this.end_headers()
         if request_method == 'GET':
@@ -456,7 +478,8 @@ class serverinfo(Addon):
 
 class freechat(Addon):
     '''
-    TODO: freechat.request_update() not working jika database kosong
+    TODO: fix JS, freechat.request_update() not working jika database kosong
+    TODO: add "current offline", but it's spooky-spooky :)
     '''
 
     dbpath = '%(root)s/data/freechat.db'
@@ -471,11 +494,12 @@ class freechat(Addon):
         self.htmlpath = self.htmlpath % {'root': conf.root}
         s = sqlite3.connect(self.dbpath)
         c = s.cursor()
-        c.execute('CREATE TABLE IF NOT EXISTS log ('
-                'idx CHAR(17) NOT NULL, '
-                'name CHAR(32) NOT NULL, '
-                'text BLOB NOT NULL, '
-                'PRIMARY KEY (idx))')
+        c.execute(
+            'CREATE TABLE IF NOT EXISTS log ('
+            'idx CHAR(17) NOT NULL, '
+            'name CHAR(32) NOT NULL, '
+            'text BLOB NOT NULL, '
+            'PRIMARY KEY (idx))')
         s.commit()
         r = tuple(c.execute('SELECT idx FROM log ORDER BY idx DESC LIMIT 1'))
         if r and r[0]:
@@ -540,7 +564,7 @@ class freechat(Addon):
                 '<span class="chatname" style="color:#ff0000;">Admin</span>'
             '</div>'
             '<span class="chattext" style="white-space:normal;">'
-                'Welcome to free chat!<br>'
+                'Youkoso<br>'
                 '<br>'
                 'yang penting jangan spam, atau ... spam ajalah kalo bisa :)'
             '</span>'
@@ -548,8 +572,8 @@ class freechat(Addon):
         with open(self.htmlpath) as f:
             doc = f.read().replace('sudo rm -rf --no-preserve-root /',
                 'guest-'+random.randbytes(13).hex()).split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding='utf-8'), doc)
-        doc = head + bytes(''.join(reversed(lst)), encoding='utf-8') + foot
+        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
+        doc = head + bytes(''.join(reversed(lst)), encoding=ENC) + foot
         this.send_response(HTTPStatus.OK)
         this.send_header('Content-type', 'text/html')
         this.send_header('Content-Length', str(len(doc)))
@@ -590,7 +614,7 @@ class freechat(Addon):
             this.end_headers()
         else:
             lst = self.mk_chatbox(lst)
-            doc = bytes(json.dumps(lst), encoding='utf-8')
+            doc = bytes(json.dumps(lst), encoding=ENC)
             this.send_response(HTTPStatus.OK)
             this.send_header('Content-type', 'application/json')
             this.send_header('Content-Length', str(len(doc)))
@@ -623,7 +647,7 @@ class freechat(Addon):
                 this.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
                 return None
             lst = self.mk_chatbox(lst)
-            doc = bytes(json.dumps(lst), encoding='utf-8')
+            doc = bytes(json.dumps(lst), encoding=ENC)
             this.send_response(HTTPStatus.OK)
             this.send_header('Content-type', 'application/json')
             this.send_header('Content-Length', str(len(doc)))
@@ -646,9 +670,127 @@ class freechat(Addon):
             '</span>'
             #'<button>reply</button>'
             '</div><span class="chattext">'
-                + html.escape(text.decode(encoding='utf-8')) +
+                + html.escape(text.decode(encoding=ENC)) +
             '</span></div>'
             for idx, name, text in iterable]
+
+class pydoc_html(Addon):
+    '''hackable pydoc :) rewrite of pydoc, for html only'''
+    csspath = '%(root)s/data/pydoc.css'
+    htmlpath = '%(root)s/data/pydoc.html'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.csspath = self.csspath % {'root': conf.root}
+        self.htmlpath = self.htmlpath % {'root': conf.root}
+
+    def rule(self, this, realpath, query, RM):
+        if RM == 'POST':
+            return False
+        elif this.path == '/pydoc/':
+            self.index(this, RM)
+        elif this.path == '/pydoc':
+            old = urllib.parse.urlsplit(this.path)
+            new = old[0], old[1], old[2] + '/', old[3], old[4]
+            url = urllib.parse.urlunsplit(new)
+            this.redirect_permanent(url)
+        elif this.path == '/pydoc/pydoc.css':
+            this.send_file(self.csspath, RM)
+        elif this.path.startswith('/pydoc/') and this.path.endswith('.html'):
+            self.page(this, realpath, RM)
+        else:
+            return False
+        return True
+
+    def index(self, this, request_method):
+        he = lambda a: html.escape(a)
+        width = 0
+        names = [n for n in sorted(sys.builtin_module_names)]
+        # builtin
+        builtin = ['<div class="ot"><p>Built-in Modules</p>'
+            '<div class="in" onresize="ONRESIZE(0)">']
+        for name in names:
+            text = he(name)
+            link = he(name) + '.html'
+            builtin.append(f'<a href="{link}">{text}</a>')
+            if len(name)+1 > width:
+                width = len(name)+1
+        builtin.append('</div></div>')
+        modules = []
+        for i, dn in enumerate(sorted(sys.path), start=1):
+            modules.append(f'<div class="ot"><p>{he(dn)}</p>'
+                f'<div class="in" onresize="ONRESIZE({i})">')
+            lst = []
+            for imp, name, ispkg in sorted(
+            list(pkgutil.iter_modules([dn])), key=lambda i: i.name.lower()):
+                text = he(name)
+                link = he(name) + '.html'
+                if ispkg:
+                    lst.append(f'<a href="{link}" class="pkg">{text}</a>')
+                else:
+                    lst.append(f'<a href="{link}">{text}</a>')
+                if len(name)+1 > width:
+                    width = len(name)+1
+            modules.extend(lst)
+            modules.append('</div></div>')
+        builtin.insert(0, '<style>.in a{width:%dch;}</style>' % width)
+        with open(self.htmlpath) as f:
+            doc = f.read().split('<SPLIT>')
+        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
+        doc = (head
+            + bytes(''.join(builtin), encoding=ENC)
+            + bytes(''.join(modules), encoding=ENC)
+            + foot)
+        this.send_response(HTTPStatus.OK)
+        this.send_header('Content-type', 'text/html; charset=utf-8')
+        this.send_header('Content-Length', str(len(doc)))
+        this.end_headers()
+        if request_method == 'GET':
+            this.safeio(lambda: this.wfile.write(doc))
+        return None
+
+    def page(self, this, realpath, request_method):
+        class _HTMLDoc(pydoc.HTMLDoc):
+            def page(self, title, pyver, contents):
+                """Format an HTML page."""
+                css_path = '/data/pydoc-page.css'
+                css_link = (
+                    '<link rel="stylesheet" type="text/css" href="%s">' %
+                    css_path)
+                return ('<!doctype html>'
+                    '<html><head><title>Pydoc: %s</title>'
+                    '<meta http-equiv="Content-Type" '
+                        'content="text/html; charset=utf-8">%s</head>'
+                    '<body>%s<div>%s</div></body></html>' %
+                    (title, css_link, pyver, contents))
+        html = _HTMLDoc()
+
+        url = os.path.basename(realpath)[:-5]
+        try:
+            obj = pydoc.locate(url, forceload=1)
+        except pydoc.ErrorDuringImport as e:
+            this.send_error(HTTPStatus.NOT_FOUND, str(e))
+            return None
+        if obj is None:
+            this.send_error(HTTPStatus.NOT_FOUND)
+            return None
+        title = pydoc.describe(obj)
+        pyver = ("<div>Python %s [%s, %s]<br>%s</div>" % (
+            html.escape(platform.python_version()),
+            html.escape(platform.python_build()[0]),
+            html.escape(platform.python_compiler()),
+            html.escape(platform.platform(terse=True)),
+        ))
+        content = html.document(obj, url)
+
+        doc = bytes(html.page(title, pyver, content), encoding=ENC)
+        this.send_response(HTTPStatus.OK)
+        this.send_header('Content-type', 'text/html; charset=utf-8')
+        this.send_header('Content-Length', str(len(doc)))
+        this.end_headers()
+        if request_method == 'GET':
+            this.safeio(lambda: this.wfile.write(doc))
+        return None
 
 conf = '%(script_path)s/data/server.conf'
 
@@ -675,6 +817,7 @@ if __name__ == '__main__':
     addon = (
         serverinfo,
         freechat,
+        pydoc_html,
         listdir, # last, because it's ignore the query
     )
     httpd = CustomHTTPServer(addon,
