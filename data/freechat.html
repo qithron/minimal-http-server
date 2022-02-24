@@ -131,6 +131,11 @@ async function firstload() {
         }
     update();
 }
+function ctrl_enter(e) {
+    if (e.ctrlKey && e.keyCode == 10) {
+        send();
+    }
+}
 ///////////////////////////////////////////////////////////////////////////////
 function username_change() {
     document.getElementById('username_a').style.display = 'none';
@@ -248,7 +253,8 @@ td{padding:0.5rem;}
     </div>
 </div>
 <table><tr><td>
-    <textarea id="textbox" rows="3" maxlength="65535"></textarea>
+    <textarea id="textbox" rows="3" maxlength="65535"
+        onkeypress="ctrl_enter(event)"></textarea>
 </td><td style="width:0;padding-left:0;vertical-align:bottom;">
     <button id="sendbut" onclick="send()">send</button>
 </td></tr></table>

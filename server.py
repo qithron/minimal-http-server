@@ -1,153 +1,443 @@
-'''2022 https://choosealicense.com/licenses/mit/
-
-TODO: add MIT license here, or in pj dir instead?
-
-force to not exceed 79 chars
+'''force to not exceed 79 chars
 
 TODO: add cache to reduce intensive modules, ex. generated files, etc ...
-TODO: remake logging, or modify http.server.BaseHTTPRequestHandler instead?
+
 TODO: override error page
 TODO: override error page (2)
 TODO: override error page (3)
-TODO: override error page in pydoc2.page(), tetap 200 jika ada masalah import
+TODO: override error page (4)
+TODO: override error page (5)
+TODO: override error page (6)
+TODO: override error page (7)
+TODO: override error page (8)
+TODO: override error page (9)
 '''
 
 import os
+import io
 import threading
+import sys
 import shutil
+import time
 import datetime
 import email
 import urllib.parse
-import http.server
-from http import HTTPStatus
-
-# listdir
-import time
+import socket
+import socketserver
 import html
+import http.client
 
-# freechat
-import sqlite3
-import json
-import random
-import queue
-
-# pydoc
-import sys
-import pkgutil
-import platform
-import pydoc
-
-ENC = 'utf-8'
-
-# def unhumanhtml(s):
-#     '''Strip HTML files to single line.'''
-#     re.sub("(<!--.*?-->)", "", s, flags=re.DOTALL)
-
-###############################################################################
+conf = '%(script_path)s/data/server.conf'
+__version__ = '0.1'
 
 class Addon:
-    def __init__(self, ServerClass):
-        self.ServerClass = ServerClass
-        #self.RequestHandlerClass = None
+    '''template for "sub RequestHandlerClass", (like: listdir, POST request)
+    without any "sub RequestHandlerClass", server only accept file requests,
+    and request to directories is FORBIDDEN'''
 
-    def rule(self, this, realpath, query, RM):
+    def __init__(self, server, root):
+        pass
+
+    def rule(self, this):
         return False
 
-class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
-    '''
-    TODO: pindahkan semua this.send_response() ... ke
-    TODO:     CustomHTTPRequestHandler.safeio()'''
-    addon = None
-
-    def __init__(self, *args, **kwargs):
+class CustomHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    def __init__(self, conf, addon=None, /, *args, **kwargs):
+        '''add "extension" to handle class'''
         super().__init__(*args, **kwargs)
+        self.RequestHandlerClass.root = conf.root
+        self.RequestHandlerClass.mime = conf.mime
+        if addon:
+            self.RequestHandlerClass.addon = [a(self,conf.root) for a in addon]
 
-    def flush_headers(self, *args, **kwargs):
+    allow_reuse_address = 1 # Seems to make sense in testing environment
+    daemon_threads = True
+
+    def server_bind(self):
+        '''Override server_bind to store the server name.'''
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = socket.getfqdn(host)
+        self.server_port = port
+
+###############################################################################
+###############################################################################
+###############################################################################
+
+_print = lambda *args: print('\033[1;33m%s\033[0m %s' % args)
+
+class CustomHTTPRequestHandler(socketserver.StreamRequestHandler):
+    '''
+    HTTP/0.9
+    HTTP/1.0 https://datatracker.ietf.org/doc/html/rfc1945
+    HTTP/1.1 https://datatracker.ietf.org/doc/html/rfc2616
+
+    TODO: add self.path correction, self.redirect_permanent, misal, hapus query
+
+    TODO: add HTTP/2.0 support
+
+    TODO: make backup for response header, self.send_header()
+
+    TODO: check request headers, like opts: Connection, Expect, Range, etc.
+    TODO:     mk_header_parser to int, or something
+
+    TODO: multiple range https://httpwg.org/specs/rfc7233.html#range.response
+    '''
+
+    html_error = ('<!doctype html><html><head>'
+        '<meta http-equiv="Content-Type" content="text/html;charset=utf-8">'
+        '<title>Error response</title>'
+        '</head>'
+        '<body>'
+            '<h1>Error response</h1>'
+            '<p>Error code: %(code)d</p>'
+            '<p>Message: %(message)s.</p>'
+            '<p>Error code explanation: %(code)s - %(explain)s.</p>'
+        '</body></html>')
+
+    server_version = 'MantapMantap/' + __version__
+    sys_version = 'Python/' + sys.version.split(maxsplit=1)[0]
+
+    # constant from socketserver.StreamRequestHandler
+    rbufsize = -1
+    wbufsize = 0
+    timeout = 5
+    disable_nagle_algorithm = False
+    # constant
+    enc = 'utf-8'
+    root = '/srv/http'
+    mime = None
+    code = http.HTTPStatus
+    addon = []
+    close_connection = True
+
+    # instance var from socketserver.BaseRequestHandler
+    request = None # socket.socket
+    client_address = None # ('127.0.0.1', 36618)
+    server = None # ServerClass
+    # instance var from socketserver.StreamRequestHandler
+    connection = None # = self.request
+    rfile = None
+    wfile = None
+    # instance var, sorted
+    raw_requestline = None
+    requestline = None
+    request_version = None
+    protocol_version = None
+    command = None # request method
+    path = None # url
+    path_abs = None # root + path
+    headers = None # request headers
+    headerr = None # response headers
+    query = None # url payload
+
+    def handle(self):
+        self.handle_one_request()
+        while not self.close_connection:
+            self.handle_one_request()
+
+    def handle_one_request(self):
         try:
-            super().flush_headers(*args, **kwargs)
+            self.headerr = []
+            self.raw_requestline = self.rfile.readline(65537)
+            if not self.raw_requestline:
+                self.close_connection = True
+            elif len(self.raw_requestline) > 65536:
+                self.send_error(self.code.REQUEST_URI_TOO_LONG)
+            elif self.handle_one_request_ex():
+                self.wfile.flush()
+        except TimeoutError as err:
+            self.log('%s', err)
+            self.close_connection = True
+        except ConnectionResetError as err:
+            self.log('%s', err)
+            self.close_connection = True
+
+    def handle_one_request_ex(self):
+        self.close_connection = True
+        self.requestline = str(self.raw_requestline, 'iso-8859-1').strip()
+        words = self.requestline.split()
+        # determine request version
+        if len(words) == 2: # HTTP/0.9
+            if words[0] != 'GET':
+                self.send_error(self.code.BAD_REQUEST,
+                    'Bad HTTP/0.9 request type (%s)' % command)
+                return False
+            self.request_version = self.protocol_version = 'HTTP/0.9'
+            self.command, self.path = words
+            self.path_abs = os.path.join(self.root, urllib.parse.unquote(
+                urllib.parse.urlsplit(self.path).path[1:]))
+            self.HTTP_0_9()
+            return True # HTTP/0.9 end here
+        elif len(words) != 3:
+            self.send_error(self.code.BAD_REQUEST,
+                'Bad request syntax (%s)' % self.requestline)
+            return False
+        match words[2]: # newer
+            case 'HTTP/1.0':
+                self.request_version = self.protocol_version = 'HTTP/1.0'
+            case 'HTTP/1.1':
+                self.request_version = self.protocol_version = 'HTTP/1.1'
+            case _:
+                self.send_error(self.code.HTTP_VERSION_NOT_SUPPORTED,
+                    'HTTP request version not supported (%s)' % words[3])
+                return False
+        # check supported method
+        match self.request_version:
+            case 'HTTP/1.0':
+                if words[0] not in ('GET', 'HEAD', 'POST'):
+                    self.send_error(self.code.BAD_REQUEST,
+                        'Unsupported method (%s) for request version %s' %
+                        (self.command, self.request_version))
+                    return False
+            case 'HTTP/1.1':
+                if words[0] not in (
+                    'CONNECT', 'DELETE', 'GET', 'HEAD',
+                    'OPTIONS', 'POST', 'PUT', 'TRACE'):
+                    self.send_error(self.code.BAD_REQUEST,
+                        'Unsupported method (%s) for request version %s' %
+                        (self.command, self.request_version))
+                    return False
+                pass
+        # check real quick
+        self.command, self.path = words[:2]
+        if not hasattr(self, 'do_'+self.command):
+            self.send_error(self.code.NOT_IMPLEMENTED,
+                'Not implemented (%s)' % self.command)
+            return False
+        # headers
+        try:
+            self.headers = http.client.parse_headers(
+                self.rfile, _class=http.client.HTTPMessage)
+        except http.client.LineTooLong as err:
+            self.send_error(self.code.REQUEST_HEADER_FIELDS_TOO_LARGE,
+                'Line too long', str(err))
+            return False
+        except http.client.HTTPException as err:
+            self.send_error(self.code.REQUEST_HEADER_FIELDS_TOO_LARGE,
+                'Too many headers', str(err))
+            return False
+        # query
+        query = urllib.parse.urlsplit(self.path).query
+        if '=' in query:
+            self.query = {p[0]: p[1] for o in query.split('&') if '=' in o
+                for p in [[*map(urllib.parse.unquote, o.split('='))]]}
+        # path_abs
+        self.path_abs = os.path.join(self.root,
+            urllib.parse.unquote(urllib.parse.urlsplit(self.path).path[1:]))
+        # finally
+        match self.request_version:
+            case 'HTTP/1.0':
+                self.HTTP_1_0()
+            case 'HTTP/1.1':
+                self.HTTP_1_1()
+        return True
+
+    def HTTP_0_9(self):
+        basename = os.path.basename(self.path_abs)
+        if basename.count('.'):
+            ext = basename.rsplit('.',1)[1]
+            if ext == '.html' or ext == '.htm':
+                if os.path.exists(self.path_abs):
+                    with open(self.path_abs, 'rb') as f:
+                        self.safe_write(f)
+                    return
+        self.safe_write(b'<html>forofor: not found</html>')
+
+    def HTTP_1_0(self):
+        getattr(self, 'do_' + self.command)()
+
+    def HTTP_1_1(self):
+        if self.headers.get('expect') == '100-continue':
+            if not self.expect_100_continue():
+                return
+        if self.headers.get('connection') == 'keep-alive' and self.timeout:
+            self.close_connection = False
+            self.header_set('Keep-Alive', f'timeout={self.timeout}, max=1000')
+            self.connection.settimeout(self.timeout)
+        getattr(self, 'do_' + self.command)()
+
+    def expect_100_continue(self):
+        '''for future
+
+        http.server.BaseHTTPRequestHandler.handle_expect_100
+        '''
+        self.safe_write('%s %d\r\n\r\n' %
+            (self.protocol_version, 100).encode('latin-1', 'strict'))
+        return True
+
+    def redirect_permanent(self, new_url):
+        self.header_response(self.code.MOVED_PERMANENTLY)
+        self.header_set('Location', new_url)
+        self.header_set('Content-Length', '0')
+        self.header_end()
+
+    def send_error(self, code, message=None, explain=None):
+        status = self.code(code)
+        if message is None:
+            message = status.phrase
+        if explain is None:
+            explain = status.description
+        self.header_response(code, message)
+        self.header_set('Connection', 'close')
+        # Message body is omitted for cases described in:
+        #  - RFC7230: 3.3. 1xx, 204(No Content), 304(Not Modified)
+        #  - RFC7231: 6.3.6. 205(Reset Content)
+        if code >= 200 and code not in (204, 205, 304):
+            body = (self.html_error % {
+                'code': code,
+                'message': html.escape(message, quote=False),
+                'explain': html.escape(explain, quote=False)}
+            ).encode('utf-8', 'replace')
+            self.header_set('Content-Type', 'text/html;charset=utf-8')
+            self.header_set('Content-Length', str(len(body)))
+            self.header_end()
+            if self.command != 'HEAD':
+                self.safe_write(body)
+        else:
+            self.header_end()
+
+    def send_header(self):
+        self.safe_write('\r\n'.join(self.headerr).encode('latin-1','strict')) \
+        and self.headerr.clear()
+
+    def header_response(self, code, message=None):
+        self.request_log(code)
+        self.headerr.insert(0, f'{self.request_version} {code} {code.phrase}')
+        self.header_set('Server', self.version_string())
+        self.header_set('Date', self.date_time_string())
+
+    def header_set(self, keyword, value):
+        self.headerr.append('%s: %s' % (keyword, value))
+        if keyword.lower() == 'connection':
+            if value.lower() == 'close':
+                self.close_connection = True
+            elif value.lower() == 'keep-alive':
+                self.close_connection = False
+
+    def header_end(self):
+        self.headerr.append('\r\n')
+        self.send_header()
+
+    def request_log(self, code, size='-'):
+        if code < 200: # 1xx informational
+            s = f'\033[1;37m{code}\033[0m'
+        elif code < 300: # 2xx successful
+            s = f'\033[1;32m{code}\033[0m'
+        elif code < 400: # 3xx redirection
+            s = f'\033[1;33m{code}\033[0m'
+        elif code < 500: # 4xx client error
+            s = f'\033[1;31m{code}\033[0m'
+        elif code < 600: # 5xx server error
+            s = f'\033[1;35m{code}\033[0m'
+        else:
+            s = 'xxx'
+        self.log('%s %s "%s"', s, str(size), self.requestline)
+
+    def log(self, format, *args):
+        sys.stderr.write('[%s] %s %s\n' % (
+            time.strftime('%Y/%m/%d %H:%M:%S', time.localtime()),
+            self.client_address[0], format%args))
+
+    _monthname = (None,
+        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+    def log2(self, format, *args):
+        year, month, day, hh, mm, ss, x, y, z = time.localtime()
+        r = '%02d/%3s/%04d %02d:%02d:%02d' % (
+            day, self._monthname[month], year, hh, mm, ss)
+        s = self.client_address[0]
+        sys.stderr.write('[%s] %s %s\n' % (r, s, format%args))
+
+    def log_warning(self, format, *args):
+        self.log('\033[1;33m%s\033[0m' % format, *args)
+
+    def log_error(self, format, *args):
+        self.log('\033[1;31m%s\033[0m' % format, *args)
+
+    def version_string(self):
+        """Return the server software version string."""
+        return self.server_version + ' ' + self.sys_version
+
+    def date_time_string(self, timestamp=None):
+        """Return the current date and time formatted for a message header."""
+        if timestamp is None:
+            timestamp = time.time()
+        return email.utils.formatdate(timestamp, usegmt=True)
+
+    def safe_write(self, fsrc, fdst=None, length=None):
+        '''
+        safe write to client
+        return True on success, False otherwise
+        accept file object and bytes
+        '''
+        s = io.BytesIO(fsrc) if type(fsrc) == bytes else fsrc
+        d = self.wfile if fdst is None else fdst
+        try:
+            shutil.copyfileobj(s, d, length)
+            return True
         except (BrokenPipeError, ConnectionResetError) as e:
             self.log_error('%s', e)
+            return False
 
-    def safeio(self, func):
+    def safe_read(self, length, fsrc=None):
+        if not fsrc:
+            fsrc = self.rfile
         try:
-            return func()
+            return fsrc.read(length)
         except (BrokenPipeError, ConnectionResetError) as e:
             self.log_error('%s', e)
-        except TypeError as e:
-            self.log_error('%s', e)
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-        return None
+            return False
 
-    def do_GET(self):
-        self.rule('GET')
-
-    def do_HEAD(self):
-        self.rule('HEAD')
-
-    def do_POST(self):
-        self.rule('POST')
-
-    @staticmethod
-    def query_to_dict(path):
-        query = urllib.parse.urlsplit(path).query
-        if '=' not in query:
-            return None
-        d = {}
-        for s in query.split('&'):
-            l = s.split('=')
-            d[l[0]] = l[1] if len(l) == 2 else ''
-        return d
-
-    @staticmethod
-    def mime_types(realpath):
-        basename = os.path.basename(realpath)
+    def mime_types(self):
+        basename = os.path.basename(self.path_abs)
         if basename.count('.'):
             ext = basename.rsplit('.',1)[1]
         else:
             return 'application/octet-stream'
-        if ext in conf.mime:
-            return conf.mime[ext]
+        if ext in self.mime:
+            return self.mime[ext]
         ext = ext.lower()
-        if ext in conf.mime:
-            return conf.mime[ext]
+        if ext in self.mime:
+            return self.mime[ext]
         return 'application/octet-stream'
 
-    def send_file(self, realpath, request_method):
-        if self.use_cache(realpath):
-            return None
-        content_type = self.mime_types(realpath)
-        stat = os.stat(realpath)
+    def send_file(self):
+        if self.use_cache():
+            return
+        content_type = self.mime_types()
+        stat = os.stat(self.path_abs)
         sz = stat.st_size
         mt = stat.st_mtime
-        if 'range' in self.headers:
+        if self.headers.get('range'):
             s, e = self.headers.get('range').split('=')[1].split('-')
             s = int(s)
             if e: e=int(e)
             else: e=sz-1
-            self.send_response(HTTPStatus.PARTIAL_CONTENT)
-            self.send_header('Content-type', content_type)
-            self.send_header('Content-Length', str(sz))
-            self.send_header('Content-Range', f'bytes {s}-{e}/{sz}')
-            self.send_header('Last-Modified', self.date_time_string(mt))
-            self.end_headers()
-            if request_method == 'GET':
-                with open(realpath, 'rb') as f:
+            self.header_response(self.code.PARTIAL_CONTENT)
+            self.header_set('Content-type', content_type)
+            self.header_set('Content-Length', str(e-s+1))
+            self.header_set('Content-Range', f'bytes {s}-{e}/{sz}')
+            self.header_set('Last-Modified', self.date_time_string(mt))
+            self.header_end()
+            if self.command == 'GET':
+                with open(self.path_abs, 'rb') as f:
                     f.seek(s)
-                    self.safeio(lambda: shutil.copyfileobj(f, self.wfile, e))
-            return None
-        self.send_response(HTTPStatus.OK)
-        self.send_header('Content-type', content_type)
-        self.send_header('Content-Length', str(sz))
-        self.send_header('Last-Modified', self.date_time_string(mt))
-        self.end_headers()
-        if request_method == 'GET':
-            with open(realpath, 'rb') as f:
-                self.safeio(lambda: shutil.copyfileobj(f, self.wfile))
-        return None
+                    self.safe_write(f, length=e)
+            return
+        self.header_response(self.code.OK)
+        self.header_set('Content-type', content_type)
+        self.header_set('Content-Length', str(sz))
+        self.header_set('Last-Modified', self.date_time_string(mt))
+        self.header_end()
+        if self.command == 'GET':
+            with open(self.path_abs, 'rb') as f:
+                self.safe_write(f)
+        return
 
-    def use_cache(self, realpath):
+    def use_cache(self):
         if ('If-Modified-Since' in self.headers
-                and 'If-None-Match' not in self.headers):
+        and 'If-None-Match' not in self.headers):
             # compare If-Modified-Since and time of last file modification
             try:
                 ims = email.utils.parsedate_to_datetime(
@@ -163,636 +453,50 @@ class CustomHTTPRequestHandler(http.server.BaseHTTPRequestHandler):
                 if ims.tzinfo is datetime.timezone.utc:
                     # compare to UTC datetime of last modification
                     last_mod = datetime.datetime.fromtimestamp(
-                        os.stat(realpath).st_mtime, datetime.timezone.utc)
+                        os.stat(self.path_abs).st_mtime, datetime.timezone.utc)
                     # remove microseconds, like in If-Modified-Since
                     last_mod = last_mod.replace(microsecond=0)
                     if last_mod <= ims:
-                        self.send_response(HTTPStatus.NOT_MODIFIED)
-                        self.end_headers()
+                        self.header_response(self.code.NOT_MODIFIED)
+                        self.header_end()
                         return True
         return False
 
-    def redirect_permanent(self, new_url):
-        self.send_response(HTTPStatus.MOVED_PERMANENTLY)
-        self.send_header('Location', new_url)
-        self.send_header('Content-Length', '0')
-        self.end_headers()
-
-    def rule_addon(self, realpath, query, RM):
+    def call_addon_rule(self):
         for addon in self.addon:
-            if addon.rule(self, realpath, query, RM):
+            if addon.rule(self):
                 break
         else:
             return False
         return True
 
-    def rule(self, RM):
-        realpath = conf.root \
-            + urllib.parse.unquote(urllib.parse.urlsplit(self.path).path)
-        query = self.query_to_dict(self.path)
-        if RM == 'POST':
-            if self.rule_addon(realpath, query, RM):
-                pass
-            else:
-                self.send_error(HTTPStatus.NOT_IMPLEMENTED, 'Not Implemented')
-            return None
-        if self.path == '/?pydoc':
-            self.redirect_permanent(f'http://{self.headers["Host"]}:60000/')
-        elif self.path == '/favicon.ico':
-            self.send_file(conf.root+'/main/img/one.png', RM)
-        elif self.rule_addon(realpath, query, RM):
+    def do_GET(self):
+        '''redirect to self.do_GET_HEAD'''
+        self.do_GET_HEAD()
+
+    def do_HEAD(self):
+        '''redirect to self.do_GET_HEAD'''
+        self.do_GET_HEAD()
+
+    def do_GET_HEAD(self):
+        if self.call_addon_rule():
             pass
-        elif os.path.isfile(realpath):
-            self.send_file(realpath, RM)
-        elif os.path.isdir(realpath) or os.path.islink(realpath):
-            self.send_error(HTTPStatus.FORBIDDEN)
+        elif os.path.isfile(self.path_abs):
+            self.send_file()
+        elif os.path.isdir(self.path_abs) or os.path.islink(self.path_abs):
+            self.send_error(self.code.FORBIDDEN)
         else:
-            self.send_error(HTTPStatus.NOT_FOUND)
-        return None
+            self.send_error(self.code.NOT_FOUND)
 
-class CustomHTTPServer(http.server.ThreadingHTTPServer):
-    def __init__(self, addon=None, *args, **kwargs):
-        '''add "extension" to handle class'''
-        super().__init__(*args, **kwargs)
-        if addon:
-            self.RequestHandlerClass.addon = [a(self) for a in addon]
-
-###############################################################################
-
-class listdir(Addon):
-    '''generate HTML document for Directory listing
-
-    TODO: fix listdir.html()
-    '''
-    htmlpath = '%(root)s/data/listdir.html'
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.htmlpath = self.htmlpath % {'root': conf.root}
-
-    def rule(self, this, realpath, query, RM):
-        if RM == 'POST':
-            return False
-        elif this.path == '/':
-            realpath = conf.root + '/index.html'
-            if os.path.exists(realpath):
-                this.send_file(realpath, RM)
-            else:
-                self.html(this, conf.root, RM)
-        elif this.path == '/?':
-            self.html(this, conf.root, RM)
-        elif os.path.isdir(realpath):
-            old = urllib.parse.urlsplit(this.path)
-            if old.path.endswith('/'):
-                self.html(this, realpath, RM)
-            else:
-                # redirect browser - doing basically what apache does
-                new = old[0], old[1], old[2] + '/', old[3], old[4]
-                url = urllib.parse.urlunsplit(new)
-                this.redirect_permanent(url)
+    def do_POST(self):
+        if self.call_addon_rule():
+            pass
         else:
-            return False
-        return True
+            self.send_error(self.code.BAD_REQUEST)
 
-    def html(self, this, realpath, request_method):
-        try:
-            if this.use_cache(realpath):
-                return None
-            lst = sorted(os.listdir(realpath),key=lambda a: a.lower())
-        except OSError:
-            this.send_error(
-                HTTPStatus.NOT_FOUND, 'No permission to list directory')
-            return None
-        # top bar for navigation
-        dirs = [v for v in realpath.removeprefix(conf.root).split('/') if v]
-        dirs.reverse()
-        a = [f'''<a href="{('../' * (len(dirs) if dirs else 1))}?">'''
-            '<span style="color:red;font-style:italic;font-weight:bold;">'
-            'root</span>/</a>'
-        ]
-        for i in range(len(dirs)-1, -1, -1):
-            a.append(f'''<a href="{('../'*i)}">{dirs[i]}/</a>''')
-        navbar = f'<table id=navbar><tr><td>{"".join(a)}</td></tr></table>'
-        # total items
-        info = f'<p>total: {len(lst)} item(s)</p>'
-        # entries, including . and ..
-        d = [] # directories
-        e = [] # files
-        b = [] # broken links
-        for fn in '.', '..':
-            fullpath = f'{realpath}/{fn}'
-            st = os.stat(fullpath)
-            sm = os.path.samefile(conf.root,fullpath) \
-                or fullpath == conf.root + '/..'
-            name = fn
-            link = fn + ('/?' if sm else '/')
-            date = time.strftime('%Y-%b-%d %H:%M:%S',time.gmtime(st.st_mtime))
-            d.append('<tr>'
-                f'<td class="name">'
-                    f'<a href="{link}"><div>{name}/</div></a></td>'
-                f'<td class="date">{date}</td>'
-                f'<td class="size">-</td>'
-                f'<td class="size">-</td>'
-                f'<td class="icon"><a href="{link}">🖿</a></td>'
-            '</tr>')
-        for fn in lst:
-            fullpath = f'{realpath}/{fn}'
-            exists = os.path.exists(fullpath)
-            st = os.stat(fullpath, follow_symlinks=exists)
-            name = html.escape(fn)
-            link = urllib.parse.quote(fn)
-            date = time.strftime('%Y-%b-%d %H:%M:%S',time.gmtime(st.st_mtime))
-            if not exists:
-                size = st.st_size
-                hsze = self.humanfilesize(size)
-                b.append('<tr>'
-                    f'<td class="name">{name}</td>'
-                    f'<td class="date">{date}</td>'
-                    f'<td class="size">{size}</td>'
-                    f'<td class="size">{hsze}</td>'
-                    f'<td class="icon">!</td>'
-                '</tr>')
-            elif os.path.isdir(fullpath):
-                d.append('<tr>'
-                    f'<td class="name">'
-                        f'<a href="{link}/"><div>{name}/</div></a></td>'
-                    f'<td class="date">{date}</td>'
-                    f'<td class="size">-</td>'
-                    f'<td class="size">-</td>'
-                    f'<td class="icon"><a href="{link}/">🖿</a></td>'
-                '</tr>')
-            else:
-                size = st.st_size
-                hsze = self.humanfilesize(size)
-                e.append('<tr>'
-                    f'<td class="name">'
-                        f'<a href="{link}"><div>{name}</div></a></td>'
-                    f'<td class="date">{date}</td>'
-                    f'<td class="size">{size}</td>'
-                    f'<td class="size">{hsze}</td>'
-                    f'<td class="icon">'
-                        f'<a href="{link}" download="{name}">🠋</a></td>'
-                '</tr>')
-        with open(self.htmlpath) as f:
-            doc = f.read().split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
-        doc = (head +
-            bytes(navbar, encoding=ENC) +
-            bytes(info, encoding=ENC) +
-            b'<table id="lstdir">' +
-            ''.join(d).encode('utf-8') +
-            ''.join(e).encode('utf-8') +
-            ''.join(b).encode('utf-8') +
-            b'</table>' + foot
-        )
-        this.send_response(HTTPStatus.OK)
-        this.send_header('Content-type', 'text/html; charset=utf-8')
-        this.send_header('Content-Length', str(len(doc)))
-        this.send_header('Last-Modified',
-            this.date_time_string(os.stat(realpath).st_mtime))
-        this.end_headers()
-        if request_method == 'GET':
-            this.safeio(lambda: this.wfile.write(doc))
-        return None
-
-    @staticmethod
-    def humanfilesize(size, sym=tuple('KMGTP')):
-        if size < 1024:
-            return str(size)
-        else:
-            step = -1
-            while size >= 1024:
-                step += 1
-                size /= 1024
-            s, f = str(round(size, 2)).split('.')
-            return f'{s}.{f if len(f) == 2 else f"{f}0"}{sym[step]}'
-
-class serverinfo(Addon):
-    htmlpath = '%(root)s/data/serverinfo.html'
-    info = None
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.htmlpath = self.htmlpath % {'root': conf.root}
-        self.info = {
-            'server_name': self.ServerClass.server_name,
-            'server_address': self.ServerClass.server_address,
-            'server_port': self.ServerClass.server_port,
-            'server_start_uptime': int(time.time()),
-            'server_version':
-                self.ServerClass.RequestHandlerClass.server_version,
-            'sys_version': self.ServerClass.RequestHandlerClass.sys_version,
-            'address_family': self.ServerClass.address_family,
-            'allow_reuse_address': self.ServerClass.allow_reuse_address,
-            'request_queue_size': self.ServerClass.request_queue_size,
-            'default_request_version':
-                self.ServerClass.RequestHandlerClass.default_request_version,
-        }
-
-    def rule(self, this, realpath, query, RM):
-        if RM == 'POST':
-            return False
-        elif this.path == '/?info':
-            self.html(this, RM)
-        else:
-            return False
-        return True
-
-    def html(self, this, request_method):
-        m = []
-        r = lambda d, i: ('<tr>'
-                f'<td>{html.escape(str(d).strip())}</td>'
-                f'<td>{html.escape(str(i).strip())}</td>'
-                '</tr>')
-        for k, v in self.info.items():
-            if k == 'server_start_uptime':
-                m.append(
-                    r('server_start', this.date_time_string(v)) +
-                    r('server_uptime', self.server_uptime(v)))
-            elif k == 'server_address':
-                ap = this.headers['host'] + ('' if v[1]==80 else f':{v[1]}')
-                m.append('<tr>'
-                    f'<td>{k}</td>'
-                    f'<td><a href="//{ap}/">{ap}</a></td>'
-                    '</tr>')
-            else:
-                m.append(r(k, v))
-        n = [r(k, v) for k, v in this.headers.items()]
-        this.send_response(HTTPStatus.OK)
-        this.send_header('Content-type', 'text/html; charset=utf-8')
-        o = [r(*v.decode().strip().split(':',1))
-            for v in this._headers_buffer[1:]]
-        o.insert(0, '<tr><td><i>' +
-            html.escape(this._headers_buffer[0].decode().strip()) +
-            '</i></td></tr>')
-        with open(conf.root + '/data/serverinfo.html') as f:
-            doc = f.read().replace('\n','').split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
-        exth = bytes('<table>', encoding=ENC)
-        extf = bytes('</table>', encoding=ENC)
-        srvr = bytes(
-            f'<tr><th colspan="2">Server Info</th></tr>{"".join(m)}',
-            encoding=ENC)
-        reqs = bytes(
-            f'<tr><th colspan="2">Request Headers</th></tr>{"".join(n)}',
-            encoding=ENC)
-        res1 = bytes(
-            f'<tr><th colspan="2">Response Headers</th></tr>{"".join(o)}'
-            '<tr><td>Content-Length</td><td>',
-            encoding=ENC)
-        res3 = bytes('</td></tr>', encoding=ENC)
-        lna = len(head) + len(foot) + len(exth) + len(extf) \
-            + len(srvr) + len(reqs) + len(res1) + len(res3)
-        lnp = lna + len(str(lna))
-        if len(str(lna)) != len(str(lnp)):
-            lnp += 1
-        lna += len(str(lnp))
-        res2 = bytes(str(lnp), encoding=ENC)
-        this.send_header('Content-Length', str(lnp))
-        this.end_headers()
-        if request_method == 'GET':
-            for v in head, exth, srvr, res1, res2, res3, reqs, extf, foot:
-                this.safeio(lambda: this.wfile.write(v))
-
-    @staticmethod
-    def server_uptime(start_time):
-        d = int(time.time()) - start_time
-        t = []
-        if d >= 86400:
-            i, d = divmod(d, 86400)
-            t.append(f'{i} days, ')
-        else:
-            t.append('0 days, ')
-        if d >= 3600:
-            i, d = divmod(d, 3600)
-            t.append(f'{i:02d}.')
-        else:
-            t.append('00.')
-        if d >= 60:
-            i, d = divmod(d, 60)
-            t.append(f'{i:02d}.')
-        else:
-            t.append('00.')
-        t.append(f'{d:02d}')
-        return ''.join(t)
-
-class freechat(Addon):
-    '''
-    TODO: fix JS, freechat.request_update() not working jika database kosong
-    TODO: add "current offline", but it's spooky-spooky :)
-    '''
-
-    dbpath = '%(root)s/data/freechat.db'
-    htmlpath = '%(root)s/data/freechat.html'
-    queue = None
-    thread = None
-    lastitem = None
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.dbpath = self.dbpath % {'root': conf.root}
-        self.htmlpath = self.htmlpath % {'root': conf.root}
-        s = sqlite3.connect(self.dbpath)
-        c = s.cursor()
-        c.execute(
-            'CREATE TABLE IF NOT EXISTS log ('
-            'idx CHAR(17) NOT NULL, '
-            'name CHAR(32) NOT NULL, '
-            'text BLOB NOT NULL, '
-            'PRIMARY KEY (idx))')
-        s.commit()
-        r = tuple(c.execute('SELECT idx FROM log ORDER BY idx DESC LIMIT 1'))
-        if r and r[0]:
-            self.lastitem = r[0][0]
-        else:
-            self.lastitem = ''
-        s.close()
-
-        self.queue = queue.SimpleQueue()
-        self.thread = threading.Thread(target=self.worker, daemon=True)
-        self.thread.start()
-
-    def rule(self, this, realpath, query, RM):
-        if not query or query['app'] != 'freechat':
-            return False
-        elif RM == 'POST':
-            if 'username' in query:
-                self.request_post(this, query)
-            else:
-                return False
-        elif 'mode' in query and query['mode'] == 'retrieve':
-            self.request_retrieve(this, query, RM)
-        elif 'mode' in query and query['mode'] == 'update':
-            self.request_update(this, query, RM)
-        elif this.path == '/?app=freechat':
-            self.html(this, RM)
-        else:
-            return False
-        return True
-
-    def worker(self):
-        sql = sqlite3.connect(self.dbpath)
-        cur = sql.cursor()
-        while True:
-            try:
-                name, text = self.queue.get(True, 10)
-            except queue.Empty:
-                sql.close()
-                name, text = self.queue.get()
-                sql = sqlite3.connect(self.dbpath)
-                cur = sql.cursor()
-            idx = str(time.time()).replace('.','')
-            if len(idx) != 17:
-                idx += '0'*(17-len(idx))
-            try:
-                cur.execute(
-                    'INSERT INTO log VALUES (?, ?, ?)', (idx, name, text))
-            except sqlite3.IntegrityError as e:
-                print(e)
-            sql.commit()
-            self.lastitem = idx
-
-    def html(self, this, request_method):
-        sql = sqlite3.connect(self.dbpath)
-        lst = sql.cursor()
-        lst = list(lst.execute('SELECT * FROM log ORDER BY idx DESC LIMIT 20'))
-        sql.close()
-        lst = self.mk_chatbox(lst)
-        lst.insert(0,
-            '<div class="chatbox" style="background-color:#00ff00;">'
-                '<div class="chathead">'
-                '<span class="chatname" style="color:#ff0000;">Admin</span>'
-            '</div>'
-            '<span class="chattext" style="white-space:normal;">'
-                'Youkoso<br>'
-                '<br>'
-                'yang penting jangan spam, atau ... spam ajalah kalo bisa :)'
-            '</span>'
-            '</div>')
-        with open(self.htmlpath) as f:
-            doc = f.read().replace('sudo rm -rf --no-preserve-root /',
-                'guest-'+random.randbytes(13).hex()).split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
-        doc = head + bytes(''.join(reversed(lst)), encoding=ENC) + foot
-        this.send_response(HTTPStatus.OK)
-        this.send_header('Content-type', 'text/html')
-        this.send_header('Content-Length', str(len(doc)))
-        this.end_headers()
-        if request_method == 'GET':
-            this.safeio(lambda: this.wfile.write(doc))
-        return None
-
-    def request_post(self, this, query):
-        name = urllib.parse.unquote(query['username'])
-        if 2 > len(name) or len(name) > 32:
-            this.send_error(HTTPStatus.NOT_ACCEPTABLE, 'You NaughtyNaughty :)')
-            return None
-        length = int(this.headers.get('content-length'))
-        if not length or length > 65535:
-            this.send_error(HTTPStatus.NOT_ACCEPTABLE, 'You NaughtyNaughty :)')
-            return None
-        this.send_response(HTTPStatus.OK)
-        this.end_headers()
-        text = this.safeio(lambda: this.rfile.read(length).strip())
-        if not text or len(text) > 65535:
-            return None
-        self.queue.put((name, text))
-        return None
-
-    def request_retrieve(self, this, query, request_method):
-        idx = query['idx']
-        sql = sqlite3.connect(self.dbpath)
-        cur = sql.cursor()
-        lst = list(cur.execute(
-            'SELECT * FROM log WHERE idx < ? ORDER BY idx DESC LIMIT ?',
-            (idx, 20)))
-        sql.close()
-        if not lst:
-            this.send_response(HTTPStatus.OK)
-            this.send_header('Content-Length', '0')
-            this.end_headers()
-        else:
-            lst = self.mk_chatbox(lst)
-            doc = bytes(json.dumps(lst), encoding=ENC)
-            this.send_response(HTTPStatus.OK)
-            this.send_header('Content-type', 'application/json')
-            this.send_header('Content-Length', str(len(doc)))
-            this.end_headers()
-            if request_method == 'GET':
-                this.safeio(lambda: this.wfile.write(doc))
-
-    def request_update(self, this, query, request_method):
-        idx = query['idx']
-        if len(idx) != 17:
-            this.send_error(HTTPStatus.NOT_FOUND)
-            return None
-        if idx == self.lastitem:
-            n = 0
-            while idx == self.lastitem and n < 40:
-                time.sleep(1.5)
-                n += 1
-        if idx == self.lastitem:
-            this.send_response(HTTPStatus.OK)
-            this.end_headers()
-        else:
-            sql = sqlite3.connect(self.dbpath)
-            cur = sql.cursor()
-            lst = list(cur.execute(
-                'SELECT * FROM log WHERE idx > ? ORDER BY idx LIMIT ?',
-                (idx, 50)))
-            sql.close()
-            if not lst:
-                print(idx, self.lastitem)
-                this.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-                return None
-            lst = self.mk_chatbox(lst)
-            doc = bytes(json.dumps(lst), encoding=ENC)
-            this.send_response(HTTPStatus.OK)
-            this.send_header('Content-type', 'application/json')
-            this.send_header('Content-Length', str(len(doc)))
-            this.end_headers()
-            if request_method == 'GET':
-                this.safeio(lambda: this.wfile.write(doc))
-            return None
-
-    @staticmethod
-    def mk_chatbox(iterable):
-        return [
-            '<div class="chatbox" id="'
-                + idx +
-            '"><div class="chathead">'
-            '<span class="chatdate">'
-                + email.utils.formatdate(int(idx[:-7]), usegmt=True) +
-            '</span>'
-            '<span class="chatname">'
-                + html.escape(name) +
-            '</span>'
-            #'<button>reply</button>'
-            '</div><span class="chattext">'
-                + html.escape(text.decode(encoding=ENC)) +
-            '</span></div>'
-            for idx, name, text in iterable]
-
-class pydoc_html(Addon):
-    '''hackable pydoc :) rewrite of pydoc, for html only'''
-    csspath = '%(root)s/data/pydoc.css'
-    htmlpath = '%(root)s/data/pydoc.html'
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.csspath = self.csspath % {'root': conf.root}
-        self.htmlpath = self.htmlpath % {'root': conf.root}
-
-    def rule(self, this, realpath, query, RM):
-        if RM == 'POST':
-            return False
-        elif this.path == '/pydoc/':
-            self.html_index(this, RM)
-        elif this.path == '/pydoc':
-            old = urllib.parse.urlsplit(this.path)
-            new = old[0], old[1], old[2] + '/', old[3], old[4]
-            url = urllib.parse.urlunsplit(new)
-            this.redirect_permanent(url)
-        elif this.path == '/pydoc/pydoc.css':
-            this.send_file(self.csspath, RM)
-        elif this.path.startswith('/pydoc/') and this.path.endswith('.html'):
-            self.html_page(this, realpath, RM)
-        else:
-            return False
-        return True
-
-    def html_index(self, this, request_method):
-        he = lambda a: html.escape(a)
-        width = 0
-        names = [n for n in sorted(sys.builtin_module_names)]
-        # builtin
-        builtin = ['<div class="ot"><p>Built-in Modules</p><div class="in">']
-        for name in names:
-            text = he(name)
-            link = he(name) + '.html'
-            builtin.append(f'<a href="{link}">{text}</a>')
-            if len(name)+1 > width:
-                width = len(name)+1
-        builtin.append('</div></div>')
-        modules = []
-        for i, dn in enumerate(sorted(sys.path), start=1):
-            modules.append(f'<div class="ot"><p>{he(dn)}</p><div class="in">')
-            lst = []
-            for imp, name, ispkg in sorted(
-            list(pkgutil.iter_modules([dn])), key=lambda i: i.name.lower()):
-                text = he(name)
-                link = he(name) + '.html'
-                if ispkg:
-                    lst.append(f'<a href="{link}" class="pkg">{text}</a>')
-                else:
-                    lst.append(f'<a href="{link}">{text}</a>')
-                if len(name)+1 > width:
-                    width = len(name)+1
-            modules.extend(lst)
-            modules.append('</div></div>')
-        builtin.insert(0, '<style>.in a{width:%dch;}</style>' % width)
-        with open(self.htmlpath) as f:
-            doc = f.read().split('<SPLIT>')
-        head, foot = map(lambda s: bytes(s, encoding=ENC), doc)
-        doc = (head
-            + bytes(''.join(builtin), encoding=ENC)
-            + bytes(''.join(modules), encoding=ENC)
-            + foot)
-        this.send_response(HTTPStatus.OK)
-        this.send_header('Content-type', 'text/html; charset=utf-8')
-        this.send_header('Content-Length', str(len(doc)))
-        this.end_headers()
-        if request_method == 'GET':
-            this.safeio(lambda: this.wfile.write(doc))
-        return None
-
-    def html_page(self, this, realpath, request_method):
-        class _HTMLDoc(pydoc.HTMLDoc):
-            def page(self, title, pyver, contents):
-                """Format an HTML page."""
-                css_path = '/data/pydoc-page.css'
-                css_link = (
-                    '<link rel="stylesheet" type="text/css" href="%s">' %
-                    css_path)
-                return ('<!doctype html>'
-                    '<html><head><title>Pydoc: %s</title>'
-                    '<meta http-equiv="Content-Type" '
-                        'content="text/html; charset=utf-8">%s</head>'
-                    '<body>%s<div>%s</div></body></html>' %
-                    (title, css_link, pyver, contents))
-        html = _HTMLDoc()
-
-        url = os.path.basename(realpath)[:-5]
-        try:
-            obj = pydoc.locate(url, forceload=1)
-        except pydoc.ErrorDuringImport as e:
-            this.send_error(HTTPStatus.NOT_FOUND, str(e))
-            return None
-        if obj is None:
-            this.send_error(HTTPStatus.NOT_FOUND)
-            return None
-        title = pydoc.describe(obj)
-        pyver = ("<div>Python %s [%s, %s]<br>%s</div>" % (
-            html.escape(platform.python_version()),
-            html.escape(platform.python_build()[0]),
-            html.escape(platform.python_compiler()),
-            html.escape(platform.platform(terse=True)),
-        ))
-        content = html.document(obj, url)
-
-        doc = bytes(html.page(title, pyver, content), encoding=ENC)
-        this.send_response(HTTPStatus.OK)
-        this.send_header('Content-type', 'text/html; charset=utf-8')
-        this.send_header('Content-Length', str(len(doc)))
-        this.end_headers()
-        if request_method == 'GET':
-            this.safeio(lambda: this.wfile.write(doc))
-        return None
-
-conf = '%(script_path)s/data/server.conf'
-
-if __name__ == '__main__':
-    conf = conf % {'script_path': os.path.dirname(__file__)}
+def _run(conf=conf):
+    script_path = os.path.dirname(__file__)
+    conf = conf % {'script_path': script_path}
     with open(conf) as t:
         conf = type('conf', (), eval(t.read()))
     conf.root = os.path.normpath(conf.root)
@@ -800,27 +504,36 @@ if __name__ == '__main__':
         for ent in conf.mime
         for lst in [ent.split()]
         for ext in lst[1:]}
+    from data import \
+        serverinfo, \
+        freechat, \
+        pydoc, \
+        python_regex_tester, \
+        listdir
+    addon = (
+        serverinfo.serverinfo,
+        freechat.freechat,
+        pydoc.pydoc,
+        python_regex_tester.python_regex_tester,
+        listdir.listdir,) # last, because it's ignore the query
+    return CustomHTTPServer(conf, addon,
+        (conf.addr,conf.port), CustomHTTPRequestHandler)
 
-    def servercmd(httpd):
-        a, p = httpd.server_address
-        print(f'Server ready at http://{a}:{p}/')
+if __name__ == '__main__':
+    from threading import Thread
+    httpd = _run()
+    srvcd = Thread(target=httpd.serve_forever)
+    srvcd.start()
+    print('Server ready at http://%s:%d/' % httpd.server_address)
+    try:
         while True:
             print('Server commands: [q]uit')
-            t = input()
-            if t == 'q':
-                httpd.shutdown()
-                break
-
-    addon = (
-        serverinfo,
-        freechat,
-        pydoc_html,
-        listdir, # last, because it's ignore the query
-    )
-    httpd = CustomHTTPServer(addon,
-        (conf.addr,conf.port), CustomHTTPRequestHandler)
-    srvcd = threading.Thread(target=lambda:servercmd(httpd))
-
-    srvcd.start()
-    httpd.serve_forever()
+            match input():
+                case 'q':
+                    httpd.shutdown()
+                    break
+    except KeyboardInterrupt:
+        httpd.shutdown()
+        print()
     srvcd.join()
+    print('Server stopped')
